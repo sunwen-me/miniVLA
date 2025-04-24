@@ -9,19 +9,39 @@ import torch
 
 warnings.filterwarnings('ignore')
 
+class Position2DEncoder(nn.Module):
+    def __init__(self, num_patches: int, dim: int, height: int, width: int):
+        super().__init__()
+        self.height = height
+        self.width = width
+        assert num_patches == height * width
+        self.row_embed = nn.Embedding(height, dim)
+        self.col_embed = nn.Embedding(width, dim)
+
+    def forward(self, batch_size: int, device=None):
+        if device is None:
+            device = next(self.row_embed.parameters()).device
+
+        rows = torch.arange(self.height, device=device).unsqueeze(1).expand(self.height, self.width)
+        cols = torch.arange(self.width, device=device).unsqueeze(0).expand(self.height, self.width)
+
+        pos = self.row_embed(rows) + self.col_embed(cols)  # [H, W, D]
+        pos = pos.reshape(-1, pos.shape[-1])  # [H*W, D]
+        pos = pos.unsqueeze(0).expand(batch_size, -1, -1)  # [B, H*W, D]
+        return pos
 
 class VisionProj(nn.Module):
     def __init__(self, ve_dim=768, lm_dim=512):
         super().__init__()
-        self.ve_dim = ve_dim
-        self.lm_dim = lm_dim
-        self.vision_proj = nn.Sequential(
-            nn.Linear(self.ve_dim, self.lm_dim)
+        self.proj = nn.Sequential(
+            nn.Linear(ve_dim, lm_dim),
+            nn.ReLU(),
+            nn.Linear(lm_dim, lm_dim)
         )
+        self.rescale = nn.Linear(ve_dim, lm_dim)
 
-    def forward(self, image_encoders):
-        vision_proj = self.vision_proj(image_encoders)
-        return vision_proj
+    def forward(self, x):
+        return self.proj(x) + self.rescale(x)
 
 
 # 继承自语言模型
@@ -35,6 +55,12 @@ class MiniMindVLM(MiniMindLM):
         self.vision_encoder, self.processor = self.__class__.get_vision_model()
         self.vision_proj = VisionProj(lm_dim=params.dim)
 
+        self.pos2d_encoder = Position2DEncoder(
+            num_patches=196,  # eg. 14x14 patches
+            dim=768,  # 与视觉 token 维度对齐
+            height=14,
+            width=14
+        )
     @staticmethod
     def get_vision_model(model_path="./model/vision_model/siglip2-base-patch16-224"):
         model = AutoModel.from_pretrained(model_path)
@@ -51,13 +77,17 @@ class MiniMindVLM(MiniMindLM):
         return inputs
 
     @staticmethod
-    def get_image_embeddings(image_tensors, vision_model):
+    def get_image_embeddings(image_tensors, vision_model,pos_encoder=None):
         with torch.no_grad():
             outputs = vision_model.vision_model(pixel_values=image_tensors)
-        img_embedding = outputs.last_hidden_state[:, 1:, :].squeeze()
-        return img_embedding
+        img_embedding = outputs.last_hidden_state[:, 0:, :].squeeze()
+        if pos_encoder:
+            pos_embed = pos_encoder(batch_size=img_embedding.size(0), device=img_embedding.device)
+            img_embedding = img_embedding + pos_embed
 
-    def count_vision_proj(self, tokens, h, vision_tensors=None, seqlen=512):
+        return img_embedding.squeeze()
+
+    def count_vision_proj(self, tokens, h, vision_tensors=None, seqlen=1024):
         def find_indices(tokens, image_ids):
             image_ids_tensor = torch.tensor(image_ids).to(tokens.device)
             len_image_ids = len(image_ids)
@@ -107,7 +137,7 @@ class MiniMindVLM(MiniMindLM):
             bs, num, c, im_h, im_w = pixel_tensors.shape
             stack_dim = 1 if bs > 1 else 0
             vision_tensors = torch.stack([
-                MiniMindVLM.get_image_embeddings(pixel_tensors[:, i, :, :, :], self.vision_encoder)
+                MiniMindVLM.get_image_embeddings(pixel_tensors[:, i, :, :, :], self.vision_encoder, self.pos2d_encoder)
                 for i in range(num)
             ], dim=stack_dim)
             h = self.count_vision_proj(tokens=input_ids, h=h, vision_tensors=vision_tensors, seqlen=input_ids.shape[1])
