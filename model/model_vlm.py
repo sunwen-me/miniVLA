@@ -31,7 +31,7 @@ class Position2DEncoder(nn.Module):
         return pos
 
 class VisionProj(nn.Module):
-    def __init__(self, ve_dim=768, lm_dim=512):
+    def __init__(self, ve_dim=768, lm_dim=1024):
         super().__init__()
         self.proj = nn.Sequential(
             nn.Linear(ve_dim, lm_dim),
