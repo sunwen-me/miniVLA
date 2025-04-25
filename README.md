@@ -169,7 +169,7 @@ print(torch.cuda.is_available())
 
 从下文提供的[数据集下载链接](https://huggingface.co/datasets/jingyaogong/minimind-v_dataset)
 下载需要的数据文件（创建`./dataset`目录）并放到`./dataset`下。
-
+git clone https://www.modelscope.cn/datasets/gongjy/minimind-v_dataset.git
 `*.jsonl`为问答数据集，`*images`为配套的图片数据，下载完成后需要解压图像数据。
 
 <details style="color:rgb(128,128,128)">
